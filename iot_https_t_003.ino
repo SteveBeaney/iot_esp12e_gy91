@@ -20,13 +20,13 @@ Adafruit_NeoPixel pixels(NUMPIXELS, PIN, NEO_RGB + NEO_KHZ800);
 
 const char* apSsid = "ESPAdmin";
 const char* apPassword = "12345678";
-String ssid = "b1";
-String password = "ed174b4c5e";
-int repeat = 5;
+String ssid = "ssid";
+String password = "password";
+int repeat = 60;
 unsigned long tick = millis()-(repeat*1000);
 String apikey = "No key";
-String host = "sbeaney.com";
-String base = "test";
+String host = "No host";
+String base = "No base";
 String device = "No device name";
 int rgbRed = 40;
 int rgbGreen = 0;
