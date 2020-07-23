@@ -44,6 +44,14 @@ int status;
 ESP8266WebServer server(80); //Server on port 80
 IPAddress dns(8, 8, 8, 8);
 
+boolean wifiInit = false;
+
+char sensorbuff[1024];
+char tmpbuff[256];
+
+float temperature, pressure, altitude;            // Create the temperature, pressure and altitude variables
+
+
 void handleRoot() {
     String b = (String)"<!DOCTYPE html>"+
                "<html lang=\"en\">"+
@@ -115,6 +123,7 @@ void handleRoot() {
 
 
 void handleData() {
+    Serial.println( "handelling data");
     int resetWifi = 0;
     int save = 0;
     for (int i = 0; i < server.args(); i++) {
@@ -163,12 +172,8 @@ void handleData() {
       EEPROM.commit();
     }
     if( resetWifi ){
-        Serial.println("reset wifi due to setting change");
-            WiFi.begin(ssid.c_str(),password.c_str());
-            while (WiFi.status() != WL_CONNECTED) {
-                Serial.print(".");
-                delay(300);
-           }
+      wifiInit = false;
+        firstConnect();
     }
     pixels.clear(); 
     for(int i=0; i<NUMPIXELS; i++) { 
@@ -189,20 +194,46 @@ void connectWiFi() {
     delay(1000);
     WiFi.mode(WIFI_AP_STA);                  
     WiFi.softAP(ID, apPassword);             //Start HOTspot removing password will disable security
+    Serial.println( ssid );
+    Serial.println( password );
     WiFi.begin(ssid.c_str(),password.c_str());
-    while (WiFi.status() != WL_CONNECTED) {
+    int repeat = 30;
+    while (WiFi.status() != WL_CONNECTED && repeat > 0) {
         Serial.print(".");
         delay(300);
+        repeat--;
     }
-    Serial.println("wifi connected");
-
-    Serial.println(WiFi.localIP());
-   
+    Serial.println();
+    if( WiFi.status() != WL_CONNECTED ) {
+        Serial.println( "connecting ap " );
+        WiFi.mode(WIFI_AP);                  
+        boolean result = WiFi.softAP(ID, apPassword);             //Start HOTspot removing password will disable security
+        delay(1000);
+        Serial.println(result);
+    }
+    Serial.println("------------------");
+    Serial.println("wifi status");
+    Serial.println(WiFi.status());
+    Serial.println(WiFi.softAPIP());
+    Serial.println(WiFi.localIP()); // 
+    Serial.println(ID);
+    
     server.on("/", handleRoot);               //Which routine to handle at root location
-    server.on("/data", handleData);          //Which routine to handle at root location
+    server.on("/data", handleData);           //Which routine to handle at root location
     server.begin();                           //Start server
-
 }
+
+
+void firstConnect() {
+    connectWiFi();
+    if( WiFi.status() != WL_CONNECTED ) {
+        wifiInit = false;
+    }else{
+        wifiInit = true;
+    }
+}
+
+
 
 String field( String inStr, int n, char delim ) {
     String result = "";
@@ -266,7 +297,6 @@ void setup(void){
     }
     readStringFromEEPROM(1,&settings);
 
-
     apikey = field(settings,0,'\t');
     device = field(settings,1,'\t');
     ssid = field(settings,2,'\t');
@@ -275,12 +305,11 @@ void setup(void){
     host = field(settings,5,'\t');
     base = field(settings,6,'\t');
 
-  if (IMU.begin() < 0) {
-    while(1) {}
-  }
+    if (IMU.begin() < 0) {
+        while(1) {}
+    }
 
-
-    connectWiFi();
+    firstConnect();
 }
 
 
@@ -289,19 +318,15 @@ void makePost( const int port, const char* link, const char* body ){
     uint32_t startT = millis();
     BearSSL::WiFiClientSecure client;
     client.setInsecure();
-    client.setTimeout(15000);
-    int retries = 60;
+    client.setTimeout(500);
 
-    while(!client.connect(host.c_str(), port) && (retries-- > 0)) {
-        delay(100);
-        retries--;
-    }
-
-   if(!client.connected()) {
+    client.connect(host.c_str(), port);
+    
+    if(!client.connected()) {
         client.stop();
-        return;
+        Serial.println( "No connection");
+       return;
     }
-//    Serial.println(body);
     
     client.print(String("POST ") + "/" + base + "/" +link + " HTTP/1.1\r\n" +
                 "apikey: " + apikey + "\r\n"+
@@ -312,96 +337,50 @@ void makePost( const int port, const char* link, const char* body ){
                 body+
                 "Connection: close\r\n"+
                 "\r\n");  
-
-  uint32_t to = millis() + 5000;
-  if (client.connected()) {
-    do {
-      char tmp[32];
-      memset(tmp, 0, 32);
-      int rlen = client.read((uint8_t*)tmp, sizeof(tmp) - 1);
-      yield();
-      if (rlen < 0) {
-        break;
-      }
-      // Only print out first line up to \r, then abort connection
-      char *nl = strchr(tmp, '\r');
-      if (nl) {
-        *nl = 0;
-        Serial.print(tmp);
-        break;
-      }
-      Serial.print(tmp);
-    } while (millis() < to);
-    Serial.print(" -- ");
-    Serial.println( millis()-startT );
-  }
-
-                                  
+                               
     client.stop(); 
+    Serial.println( "Done");
     return; 
 }
 
-char sensorbuff[1024];
-char tmpbuff[256];
-
-float temperature, pressure, altitude;            // Create the temperature, pressure and altitude variables
 
 void loop(void){
     server.handleClient();         
-    if( millis()-tick > (repeat*1000) || tick > millis() ){
+    if( (millis()-tick > (repeat*1000) || tick > millis()) && wifiInit){
         tick = millis(); 
-        if (WiFi.status() == WL_CONNECTED) {
+        if (WiFi.status() == WL_CONNECTED  ) {
             bmp280.getMeasurements(temperature, pressure, altitude);      
             IMU.readSensor();
 
-              sprintf( sensorbuff, "{\"device\":\"%s\",\"values\": [ ",
-                       device.c_str() );
-
-              sprintf( tmpbuff, "{\"parameter\":\"acc-x\",\"unit\":\"m/s2\",\"value\":%f},",
-                       IMU.getAccelX_mss());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"acc-y\",\"unit\":\"m/s2\",\"value\":%f},",
-                       IMU.getAccelY_mss());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"acc-z\",\"unit\":\"m/s2\",\"value\":%f},",
-                       IMU.getAccelZ_mss());
-              strcat (sensorbuff,tmpbuff);
-                       
-              sprintf( tmpbuff, "{\"parameter\":\"gyr-x\",\"unit\":\"rad\",\"value\":%f},",
-                       IMU.getGyroX_rads());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"gyr-y\",\"unit\":\"rad\",\"value\":%f},",
-                       IMU.getGyroY_rads());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"gyr-z\",\"unit\":\"rad\",\"value\":%f},",
-                       IMU.getGyroZ_rads());
-              strcat (sensorbuff,tmpbuff);
-                       
-              sprintf( tmpbuff, "{\"parameter\":\"mag-x\",\"unit\":\"uT\",\"value\":%f},",
-                       IMU.getMagX_uT());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"mag-y\",\"unit\":\"uT\",\"value\":%f},",
-                       IMU.getMagY_uT());
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"mag-z\",\"unit\":\"uT\",\"value\":%f},",
-                       IMU.getMagZ_uT());
-              strcat (sensorbuff,tmpbuff);
-              
-
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"temperature\",\"unit\":\"C\",\"value\":%f},",
-                       temperature);
-              strcat (sensorbuff,tmpbuff);
-              sprintf( tmpbuff, "{\"parameter\":\"pressure\",\"unit\":\"hPa\",\"value\":%f}",
-                       pressure);
-              strcat (sensorbuff,tmpbuff);
-              
-       
-              
-              strcat( sensorbuff, "] } " );
+            sprintf( sensorbuff, "{\"device\":\"%s\",\"values\": [ ",device.c_str() );
+            sprintf( tmpbuff, "{\"parameter\":\"acc-x\",\"unit\":\"m/s2\",\"value\":%f},",IMU.getAccelX_mss());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"acc-y\",\"unit\":\"m/s2\",\"value\":%f},",IMU.getAccelY_mss());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"acc-z\",\"unit\":\"m/s2\",\"value\":%f},",IMU.getAccelZ_mss());
+            strcat (sensorbuff,tmpbuff);                    
+            sprintf( tmpbuff, "{\"parameter\":\"gyr-x\",\"unit\":\"rad\",\"value\":%f},",IMU.getGyroX_rads());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"gyr-y\",\"unit\":\"rad\",\"value\":%f},",IMU.getGyroY_rads());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"gyr-z\",\"unit\":\"rad\",\"value\":%f},",IMU.getGyroZ_rads());
+            strcat (sensorbuff,tmpbuff);                       
+            sprintf( tmpbuff, "{\"parameter\":\"mag-x\",\"unit\":\"uT\",\"value\":%f},",IMU.getMagX_uT());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"mag-y\",\"unit\":\"uT\",\"value\":%f},",IMU.getMagY_uT());
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"mag-z\",\"unit\":\"uT\",\"value\":%f},",IMU.getMagZ_uT());
+            strcat (sensorbuff,tmpbuff);
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"temperature\",\"unit\":\"C\",\"value\":%f},",temperature);
+            strcat (sensorbuff,tmpbuff);
+            sprintf( tmpbuff, "{\"parameter\":\"pressure\",\"unit\":\"hPa\",\"value\":%f}",pressure);
+            strcat (sensorbuff,tmpbuff);              
+            strcat( sensorbuff, "] } " );
 
             makePost( 443 , "readings", sensorbuff);            
         }else{
+         
             connectWiFi();
         }
     }
